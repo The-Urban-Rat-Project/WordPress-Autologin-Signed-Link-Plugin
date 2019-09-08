@@ -1,13 +1,12 @@
 <?php 
     /*
-    Plugin Name: Auto Login
-    Plugin URI: http://example.com
-    Description: Plugin for login user with url
-    Author: Example
-    Version: 1.0.0
-    Author URI: http://example.com
-	Text Domain: plugin-slug
-	License: GPLv2 or later
+    Plugin Name: Login By Signed URL
+    Plugin URI: http://tbd.com
+    Description: Allows users with selected roles to be logged in to WordPress simply by browsing a link.
+    Author: Michael Fielding
+    Version: 1.1.0
+	Text Domain: autoLogin
+	License: GPLv2
 	License URI: http://www.gnu.org/licenses/gpl-2.0.txt
     */
 	
@@ -26,54 +25,88 @@
 	along with this program; if not, write to the Free Software
 	Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-	Copyright 2005-2015 Automattic, Inc.
+	Copyright 2019 Microneer Limited
 	*/	
-?>
-<?php	
+
 register_activation_hook( __FILE__, 'autoLogin_activate' );
 function autoLogin_activate() {
-	//create a variable to specify the details of page
-    $randomString = base64_encode(openssl_random_pseudo_bytes(30));
-	update_option( 'autoLogin_Secret_Key', $randomString);
-	
-	//Initialize Virtual url option to default value
-	$virtual_url = get_option('autoLogin_Virtual_Url');
-	if(empty($virtual_url)){
-		update_option( 'autoLogin_Virtual_Url', 'autoLogin');
+	// if some plugin options are not set, add the default values
+	if ( empty(get_option('autoLogin_Key')) ) {
+		update_option( 'autoLogin_Key', base64_encode(openssl_random_pseudo_bytes(30)) );
+	}
+	if ( empty(get_option('autoLogin_Roles')) ) {
+		update_option( 'autoLogin_Roles', array() );
+	}
+	if ( empty(get_option('autoLogin_User_Param')) ) {
+		update_option( 'autoLogin_User_Param', 'user' );
+	}
+	if ( empty(get_option('autoLogin_Signature_Param')) ) {
+		update_option( 'autoLogin_Signature_Param', 'sig' );
 	}
 }
 
-// Code For Virtual Page
-$virtual_url = get_option('autoLogin_Virtual_Url');
+/**
+	Add a message to the outgoing HTTP headers.
+	@param $message The message to add.
+*/
+function autoLogin_debug( $message ) {
+	header( "X-Login-By-Signed-URL-Message: $message");
+}
 
-
-//Generate Rewrite Rule
-add_filter( 'generate_rewrite_rules', function ( $wp_rewrite ) {
-    $wp_rewrite->rules = array_merge(
-        [''.$virtual_url.'/?$' => 'index.php?user=user&secret=$matches[1]'],
-        $wp_rewrite->rules
-    );
-} ); 
-
-//Add Query Variables
+//Add Query Variables - i.e. allow our configured query parameters to be accepted in the page URL
 add_filter( 'query_vars', function( $query_vars ) {
-	$user_param = get_option( 'autoLogin_User_Parm' );
-	$secret_param = get_option( 'autoLogin_Secret_Parm' );
-    $query_vars[] = $user_param;
-    $query_vars[] = $secret_param;
+	$query_vars[] = get_option( 'autoLogin_User_Param' );
+	$query_vars[] = get_option( 'autoLogin_Signature_Param' );
     return $query_vars;
 } );
 
-// Check query variables and redirect to template if true
+// Check query variables during rendering of the template and login a user if there's a user specified
 add_action( 'template_redirect', function() {
-	$user_param = get_option( 'autoLogin_User_Parm' );
-	$secret_param = get_option( 'autoLogin_Secret_Parm' );
-    $hash = get_query_var( $user_param );
-    $hash2 = get_query_var( $secret_param );
-    if (($hash) && ($hash2)) {
-        include plugin_dir_path( __FILE__ ) . 'templates/virtualPage.php';
-        die;
-    }
+	// can only work if the plugin options are set
+	if ( !empty(get_option('autoLogin_User_Param') ) ) {
+		$username = get_query_var( get_option('autoLogin_User_Param') );
+		$provided_signature = get_query_var( get_option('autoLogin_Signature_Param') );
+		
+		// check if both our expected query parameters are present...
+		if ( !empty($username) && !empty($provided_signature) ) {
+		
+			// try to get the user by their username...
+			$user = get_user_by('login', $username );
+			
+			if ( $user === false ) {
+				// the username provided didn't even exist
+				autoLogin_debug( "User $username not found" );	
+			} else {
+				// user was found, let's check the signature is correct...
+				$expected_signature = hash('sha256',$username.get_option('autoLogin_Key'));
+				
+				if ( strtolower($provided_signature) !== $expected_signature ) {
+					autoLogin_debug( "Signature is wrong" );
+				} else {
+					// Signature correct,  check each role for user to find one which is allowed to be auto logged in...
+					$ok = false; // assume not logged in
+					$allowed_roles = array_map( 'strtolower', get_option('autoLogin_Roles') );
+					foreach( $user->roles as $user_role ) {
+						// look for the user's role in the allowed roles array, doing it case insensitive
+						if ( in_array(strtolower($user_role), $allowed_roles) ) {
+							// found a valid role, log the user in
+							wp_set_current_user($user->ID, $username);
+							wp_set_auth_cookie($user->ID, true);
+							do_action('wp_login', $username, $user, false);
+							$ok = true;
+							break; // skip out of the foreach loop, we only need to login once!
+						}
+					}
+					if ( $ok ) {
+						autoLogin_debug( "Logged in $username" );
+					} else {
+						autoLogin_debug( "User's role ".get_option('autoLogin_Roles')[0]." isn't allowed" );
+					}
+
+				}
+			}
+		}
+	}
 } ); 
 
 //Admin Setting Page
@@ -81,51 +114,120 @@ add_action('admin_menu', 'autoLogin_create_theme_options_page');
 add_action('admin_init', 'autoLogin_register_and_build_fields');
  
 function autoLogin_create_theme_options_page() {
-	add_menu_page('Auto login settings', 'Auto login settings', 'administrator', __FILE__, 'autoLogin_options_page_fn');
-}
-
-function autoLogin_section_cb(){
-	
+	add_submenu_page('options-general.php', 'Login By Signed URL settings', 'Login By Signed URL', 'administrator', __FILE__, 'autoLogin_options_page');
 }
 
 function autoLogin_register_and_build_fields() {
-	register_setting('autoLogin_Plugin_Options', 'autoLogin_Plugin_Options', 'validate_setting');
-	register_setting('autoLogin_Plugin_Options', 'autoLogin_Virtual_Url', 'validate_setting');
-	register_setting('autoLogin_Plugin_Options', 'autoLogin_Secret_Key', 'validate_setting');
-	register_setting('autoLogin_Plugin_Options', 'autoLogin_User_Parm', 'validate_setting');
-	register_setting('autoLogin_Plugin_Options', 'autoLogin_Secret_Parm', 'validate_setting');
+	// register all the options that need to be managed for this plugin
+	register_setting('autoLogin_Plugin_Options', 'autoLogin_Key');
+	register_setting('autoLogin_Plugin_Options', 'autoLogin_Roles');
+	register_setting('autoLogin_Plugin_Options', 'autoLogin_User_Param');
+	register_setting('autoLogin_Plugin_Options', 'autoLogin_Signature_Param');
  
-	add_settings_section('main_section', 'Main Settings', 'autoLogin_section_cb', __FILE__);
+	add_settings_section(
+		'autoLogin_Main_Section', 
+		'Main', 
+		function(){
+			?>
+			<p>The Secret Key may be shared with other systems to enable them to log users into WordPress.</p>
+			<p>The Allowed Roles checkboxes enable functionality for individual WordPress user roles - if the checkbox is not checked, users
+			with that role cannot be logged in via a link.</p>
+			<?php
+		} , 
+		__FILE__
+	);
+	add_settings_section(
+		'autoLogin_Query_Parameters_Section', 
+		'Autologin URL parameters', 
+		function(){
+			?>
+			<p>These settings allow the query string parameter names in the login link to be customised, for example to avoid conflict with another plugin
+			that uses query string parameters.</p>
+			<?php
+		},
+		__FILE__
+	);
  
-	add_settings_field('autoLogin_Virtual_Url', 'Virtual Page Slug:', 'autoLogin_virtual_urlsetting', __FILE__, 'main_section');
-	add_settings_field('autoLogin_Secret_Key', 'Secret Key:', 'autoLogin_secret_keysetting', __FILE__, 'main_section');
-	add_settings_field('autoLogin_User_Parm', 'User Parameter:', 'autoLogin_user_parm_setting', __FILE__, 'main_section');
-	add_settings_field('autoLogin_Secret_Parm', 'Secret Parameter:', 'autoLogin_secret_parm_setting', __FILE__, 'main_section');
-   
-    add_settings_field('autoLogin_user_roles', 'User Roles', 'autoLogin_user_roles', __FILE__, 'main_section');
- 
+	add_settings_field(
+		'autoLogin_Key', 
+		'Secret key', 
+		function () {
+			$autoLogin_Key = get_option('autoLogin_Key');
+			echo "<input name='autoLogin_Key' style='width:400px;' type='text' value='{$autoLogin_Key}'>";
+		}, 
+		__FILE__, 
+		'autoLogin_Main_Section'
+	);
+    add_settings_field(
+		'autoLogin_user_roles', 
+		'Allowed roles', 
+		function () {
+			
+			global $wp_roles;
+
+			if ( ! isset( $wp_roles ) )
+				$wp_roles = new WP_Roles();
+
+			$all_roles = $wp_roles->get_names();
+			
+			$allowed_roles = get_option('autoLogin_Roles');
+		   
+			foreach ( $all_roles as $role ) {
+				// check html checkbox if the role is one of the allowed roles
+				$checked = in_array($role, $allowed_roles) ? ' checked="checked"':'';
+				echo '<input type="checkbox" name="autoLogin_Roles[]" value="'.$role.'"'.$checked.'>'.$role.'<br>';
+			}
+		   
+		},
+		__FILE__, 
+		'autoLogin_Main_Section'
+	);
+	add_settings_field(
+		'autoLogin_User_Param', 
+		'Username', 
+		function () {
+		   $autoLogin_User_Param = get_option('autoLogin_User_Param');
+		   echo "<input name='autoLogin_User_Param' style='width:400px;' type='text' value='{$autoLogin_User_Param}'>";
+		},
+		__FILE__, 
+		'autoLogin_Query_Parameters_Section'
+	);
+	add_settings_field(
+		'autoLogin_Signature_Param', 
+		'Signature', 
+		function () {
+		   $autoLogin_Signature_Param = get_option('autoLogin_Signature_Param');
+		   echo "<input name='autoLogin_Signature_Param' style='width:400px;' type='text' value='{$autoLogin_Signature_Param}'>";
+		},
+		__FILE__, 
+		'autoLogin_Query_Parameters_Section'
+	);
 }
 
 // Admin view page
-function autoLogin_options_page_fn() {
+function autoLogin_options_page() {
 	ob_start();
 ?>
-    <div id="theme-options-wrap" class="widefat">
+    <div class="wrap">
 		<div class="icon32" id="icon-tools"></div>
 	 
-		<h2>Auto Login Settings</h2>
+		<h1>Login By Signed URL Settings</h1>
+		<p>
+			The Login By Signed URL plugin allows WordPress users with selected roles to be logged in from a magic link which includes
+			two query parameters - one holding the username to log in, and one with a unique signature for that user. This can be useful
+			to allow users to log in directly from transactional or marketing emails, for example.
+		</p>
+		<p>
+			The unique signature is the SHA256 hash of the username concatenated with a secret key. The secret key is common to all users - 
+			it's configured below.
+		</p>
 		<?php
-		$options = get_option('autoLogin_Plugin_Options');
-		$autoLogin_Virtual_Url = get_option('autoLogin_Virtual_Url');
-		$site_url = site_url();
-		$virtual_slug = $autoLogin_Virtual_Url;
-		if(empty($virtual_slug)){
-			$virtual_slug = 'autoLogin';
-		}
 		
-		$final_url = $site_url.'/'.$virtual_slug.'?user=username&secret=[SHA256(username.SecretKeySetting)]';
+		$user = get_option('autoLogin_User_Param');
+		$sig = get_option('autoLogin_Signature_Param');
+		$url = site_url()."/page-to-visit?$user=<i>username</i>&$sig=<i>signature</i>";
 		?>
-        <h4>Auto Login Url Is :  <b><?php echo $final_url;?></b> </h4>
+        <h4>Login URL example:  <b><?php echo $url;?></b> </h4>
 
         <form method="post" action="options.php" enctype="multipart/form-data">
 			<?php 
@@ -139,63 +241,4 @@ function autoLogin_options_page_fn() {
     </div>
 <?php
 ob_end_flush(); 
-}
-
-// Virtual Url Slug field
-function autoLogin_virtual_urlsetting() {
-   $autoLogin_Virtual_Url = get_option('autoLogin_Virtual_Url');
-   echo "<input name='autoLogin_Virtual_Url' style='width:400px;' placeholder='autoLogin' type='text' value='{$autoLogin_Virtual_Url}' />";
-}
-
-// Secret Key field
-function autoLogin_secret_keysetting() {
-   $autoLogin_Secret_Key = get_option('autoLogin_Secret_Key');
-   echo "<input name='autoLogin_Secret_Key' style='width:400px;' type='text' value='{$autoLogin_Secret_Key}'>";
-}
-
-// User Parameter field
-function autoLogin_user_parm_setting() {
-   $autoLogin_User_Parm = get_option('autoLogin_User_Parm');
-   echo "<input name='autoLogin_User_Parm' style='width:400px;' placeholder='user' type='text' value='{$autoLogin_User_Parm}'>";
-}
-
-// Secret Parameter field
-function autoLogin_secret_parm_setting() {
-   $autoLogin_Secret_Parm = get_option('autoLogin_Secret_Parm');
-   echo "<input name='autoLogin_Secret_Parm' style='width:400px;' placeholder='secret' type='text' value='{$autoLogin_Secret_Parm}'>";
-}
-
-
-
-// Role Settings
-function autoLogin_user_roles() {
-	
-	global $wp_roles;
-
-	if ( ! isset( $wp_roles ) )
-		$wp_roles = new WP_Roles();
-
-		$all_roles = $wp_roles->get_names();
-		
-		$options = get_option('autoLogin_Plugin_Options');
-	   
-		$option = $options['role'];
-	// IF AutoLogin Role Options are empty then initialize empty array
-	if(empty($option)){
-		$option = array();
-	}
-	
-	$roles = array();
-	foreach ( $all_roles as $type => $obj ) {
-		$roles[] = $type;
-	}
-	
-	foreach ( $roles as $key => $val ) {
-		if ( in_array($val ,$option ) ) {
-			echo '<input type="checkbox" name="autoLogin_Plugin_Options[role][]" value="'.$val.'" checked="checked">'.$all_roles[$val].'<br>';
-		} else {
-			echo '<input type="checkbox" name="autoLogin_Plugin_Options[role][]" value="'.$val.'">'.$all_roles[$val].'<br>';
-		}
-	}
-   
 }

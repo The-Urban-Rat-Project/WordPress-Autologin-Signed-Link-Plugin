@@ -1,5 +1,5 @@
-=== Auto Login ===
-Contributors: Example
+=== Login By Signed URL ===
+Contributors: Michael Fielding
 Tags: Autologin, login, bypass login, automatic login, wordpress login
 Requires at least: 4.0
 Tested up to: 1.0
