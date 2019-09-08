@@ -131,7 +131,7 @@ function autoLogin_register_and_build_fields() {
 	// add two settings sections ------------
 	add_settings_section(
 		'autoLogin_Main_Section', 
-		'Main', 
+		'Settings', 
 		function(){
 			?>
 			<p>The Secret Key may be shared with other systems to enable them to log users into WordPress.</p>
@@ -143,7 +143,7 @@ function autoLogin_register_and_build_fields() {
 	);
 	add_settings_section(
 		'autoLogin_Query_Parameters_Section', 
-		'Autologin URL parameters', 
+		'URL Parameter Settings', 
 		function(){
 			?>
 			<p>These settings allow the query string parameter names in the login link to be customised, for example to avoid conflict with another plugin
