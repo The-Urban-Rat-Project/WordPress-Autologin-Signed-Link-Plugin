@@ -37,6 +37,9 @@ function autoLogin_activate() {
 	if ( empty(get_option('autoLogin_Roles')) ) {
 		update_option( 'autoLogin_Roles', array() );
 	}
+	if ( empty(get_option('autoLogin_Debug')) ) {
+		update_option( 'autoLogin_Debug', false );
+	}
 	if ( empty(get_option('autoLogin_User_Param')) ) {
 		update_option( 'autoLogin_User_Param', 'user' );
 	}
@@ -50,7 +53,8 @@ function autoLogin_activate() {
 	@param $message The message to add.
 */
 function autoLogin_debug( $message ) {
-	header( "X-Login-By-Signed-URL-Message: $message");
+	if ( get_option('autoLogin_Debug') )
+		header( "X-Login-By-Signed-URL-Message: $message");
 }
 
 //Add Query Variables - i.e. allow our configured query parameters to be accepted in the page URL
@@ -100,9 +104,8 @@ add_action( 'template_redirect', function() {
 					if ( $ok ) {
 						autoLogin_debug( "Logged in $username" );
 					} else {
-						autoLogin_debug( "User's role ".get_option('autoLogin_Roles')[0]." isn't allowed" );
+						autoLogin_debug( "User's role isn't allowed" );
 					}
-
 				}
 			}
 		}
@@ -118,12 +121,14 @@ function autoLogin_create_theme_options_page() {
 }
 
 function autoLogin_register_and_build_fields() {
-	// register all the options that need to be managed for this plugin
+	// register all the settings ---------------
 	register_setting('autoLogin_Plugin_Options', 'autoLogin_Key');
 	register_setting('autoLogin_Plugin_Options', 'autoLogin_Roles');
+	register_setting('autoLogin_Plugin_Options', 'autoLogin_Debug');
 	register_setting('autoLogin_Plugin_Options', 'autoLogin_User_Param');
 	register_setting('autoLogin_Plugin_Options', 'autoLogin_Signature_Param');
  
+	// add two settings sections ------------
 	add_settings_section(
 		'autoLogin_Main_Section', 
 		'Main', 
@@ -148,6 +153,7 @@ function autoLogin_register_and_build_fields() {
 		__FILE__
 	);
  
+	// add all the settings fields --------------
 	add_settings_field(
 		'autoLogin_Key', 
 		'Secret key', 
@@ -179,6 +185,16 @@ function autoLogin_register_and_build_fields() {
 			}
 		   
 		},
+		__FILE__, 
+		'autoLogin_Main_Section'
+	);
+	add_settings_field(
+		'autoLogin_Debug', 
+		'Debugging', 
+		function () {
+			$debug = get_option('autoLogin_Debug');
+			echo '<input type="checkbox" name="autoLogin_Debug" value="{$debug}" '.($debug?' checked="checked"':'').'>Send X-Login-By-Signed-URL-Message headers';
+		}, 
 		__FILE__, 
 		'autoLogin_Main_Section'
 	);
@@ -222,12 +238,13 @@ function autoLogin_options_page() {
 			it's configured below.
 		</p>
 		<?php
-		
+		// show an example link
 		$user = get_option('autoLogin_User_Param');
 		$sig = get_option('autoLogin_Signature_Param');
 		$url = site_url()."/page-to-visit?$user=<i>username</i>&$sig=<i>signature</i>";
 		?>
-        <h4>Login URL example:  <b><?php echo $url;?></b> </h4>
+        <p>example:</p>
+		<p><?php echo $url;?></p>
 
         <form method="post" action="options.php" enctype="multipart/form-data">
 			<?php 
